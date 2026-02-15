@@ -19,7 +19,7 @@ def test_search_uses_config_defaults(tmp_path, monkeypatch) -> None:
         provider="gemini",
         base_url="https://example.test",
         auto_index=False,
-        local_cuda=True,
+        local_device="cuda",
         rerank="bm25",
         flashrank_model="ms-marco-MultiBERT-L-12",
         remote_rerank=RemoteRerankConfig(
@@ -57,7 +57,7 @@ def test_search_uses_config_defaults(tmp_path, monkeypatch) -> None:
     assert req.base_url == "https://example.test"
     assert req.api_key == "key"
     assert req.auto_index is False
-    assert req.local_cuda is True
+    assert req.local_device == "cuda"
     assert req.rerank == "bm25"
     assert req.flashrank_model == "ms-marco-MultiBERT-L-12"
     assert req.remote_rerank is not None
@@ -75,7 +75,7 @@ def test_search_overrides_config(tmp_path, monkeypatch) -> None:
         provider="gemini",
         base_url="https://config.test",
         auto_index=True,
-        local_cuda=False,
+        local_device="cpu",
     )
     monkeypatch.setattr(api_module, "load_config", lambda: cfg)
     captured: dict[str, object] = {}
@@ -104,7 +104,7 @@ def test_search_overrides_config(tmp_path, monkeypatch) -> None:
         extract_backend="process",
         base_url="https://override.test",
         api_key="override-key",
-        local_cuda=True,
+        local_device="cuda",
         embedding_dimensions=512,
         auto_index=False,
     )
@@ -119,7 +119,7 @@ def test_search_overrides_config(tmp_path, monkeypatch) -> None:
     assert req.base_url == "https://override.test"
     assert req.api_key == "override-key"
     assert req.auto_index is False
-    assert req.local_cuda is True
+    assert req.local_device == "cuda"
     assert req.embedding_dimensions == 512
 
 
@@ -449,7 +449,7 @@ def test_in_memory_index_search_uses_search_from_vectors(tmp_path, monkeypatch) 
         provider="openai",
         base_url=None,
         api_key=None,
-        local_cuda=False,
+        local_device="cpu",
         embedding_dimensions=1536,
     )
 

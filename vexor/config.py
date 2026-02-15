@@ -30,11 +30,15 @@ DEFAULT_EMBED_CONCURRENCY = 4
 DEFAULT_EXTRACT_CONCURRENCY = max(1, min(4, os.cpu_count() or 1))
 DEFAULT_EXTRACT_BACKEND = "auto"
 DEFAULT_PROVIDER = "openai"
+DEFAULT_LOCAL_DEVICE = "cpu"
+DEFAULT_COREML_COMPUTE_UNITS = "ALL"
 DEFAULT_RERANK = "off"
 DEFAULT_FLASHRANK_MODEL = "ms-marco-TinyBERT-L-2-v2"
 DEFAULT_FLASHRANK_MAX_LENGTH = 256
 VOYAGE_BASE_URL = "https://api.voyageai.com/v1"
 SUPPORTED_PROVIDERS: tuple[str, ...] = (DEFAULT_PROVIDER, "gemini", "voyageai", "custom", "local")
+SUPPORTED_LOCAL_DEVICES: tuple[str, ...] = ("cpu", "cuda", "coreml")
+SUPPORTED_COREML_COMPUTE_UNITS: tuple[str, ...] = ("ALL", "CPU_AND_GPU", "CPU_AND_NE", "CPU_ONLY")
 SUPPORTED_RERANKERS: tuple[str, ...] = ("off", "bm25", "flashrank", "remote")
 SUPPORTED_EXTRACT_BACKENDS: tuple[str, ...] = ("auto", "thread", "process")
 # Models that support the dimensions parameter (model prefix/name -> supported dimensions)
@@ -69,11 +73,29 @@ class Config:
     provider: str = DEFAULT_PROVIDER
     base_url: str | None = None
     auto_index: bool = True
-    local_cuda: bool = False
+    local_device: str = DEFAULT_LOCAL_DEVICE
+    coreml_compute_units: str = DEFAULT_COREML_COMPUTE_UNITS
     rerank: str = DEFAULT_RERANK
     flashrank_model: str | None = None
     remote_rerank: RemoteRerankConfig | None = None
     embedding_dimensions: int | None = None
+
+
+def detect_default_device() -> str:
+    """Detect the default local device based on platform and available providers.
+
+    Returns 'coreml' on Darwin ARM64 only if CoreML EP is actually available,
+    otherwise 'cpu'. This prevents breaking users who don't have onnxruntime.
+    """
+    import platform
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        try:
+            from .providers.local import is_coreml_available
+            if is_coreml_available():
+                return "coreml"
+        except Exception:
+            pass
+    return "cpu"
 
 
 def _parse_remote_rerank(raw: object) -> RemoteRerankConfig | None:
@@ -128,6 +150,17 @@ def load_config() -> Config:
     rerank = (raw.get("rerank") or DEFAULT_RERANK).strip().lower()
     if rerank not in SUPPORTED_RERANKERS:
         rerank = DEFAULT_RERANK
+
+    # Backward compatibility: handle old local_cuda field
+    local_device = raw.get("local_device")
+    if local_device is None:
+        # Check old local_cuda field for backward compat
+        local_cuda = raw.get("local_cuda")
+        if local_cuda is True:
+            local_device = "cuda"
+        else:
+            local_device = DEFAULT_LOCAL_DEVICE
+
     return Config(
         api_key=raw.get("api_key") or None,
         model=raw.get("model") or DEFAULT_MODEL,
@@ -140,7 +173,8 @@ def load_config() -> Config:
         provider=raw.get("provider") or DEFAULT_PROVIDER,
         base_url=raw.get("base_url") or None,
         auto_index=bool(raw.get("auto_index", True)),
-        local_cuda=bool(raw.get("local_cuda", False)),
+        local_device=local_device or DEFAULT_LOCAL_DEVICE,
+        coreml_compute_units=raw.get("coreml_compute_units") or DEFAULT_COREML_COMPUTE_UNITS,
         rerank=rerank,
         flashrank_model=raw.get("flashrank_model") or None,
         remote_rerank=_parse_remote_rerank(raw.get("remote_rerank")),
@@ -165,7 +199,9 @@ def save_config(config: Config) -> None:
     if config.base_url:
         data["base_url"] = config.base_url
     data["auto_index"] = bool(config.auto_index)
-    data["local_cuda"] = bool(config.local_cuda)
+    data["local_device"] = config.local_device
+    if config.coreml_compute_units != DEFAULT_COREML_COMPUTE_UNITS:
+        data["coreml_compute_units"] = config.coreml_compute_units
     data["rerank"] = config.rerank
     if config.flashrank_model:
         data["flashrank_model"] = config.flashrank_model
@@ -289,9 +325,28 @@ def set_auto_index(value: bool) -> None:
     save_config(config)
 
 
-def set_local_cuda(value: bool) -> None:
+def set_local_device(value: str) -> None:
+    """Set the local device (cpu, cuda, or coreml)."""
     config = load_config()
-    config.local_cuda = bool(value)
+    device = value.strip().lower()
+    if device not in SUPPORTED_LOCAL_DEVICES:
+        raise ValueError(
+            f"Unsupported local device: {value}. Supported devices: {', '.join(SUPPORTED_LOCAL_DEVICES)}"
+        )
+    config.local_device = device
+    save_config(config)
+
+
+def set_coreml_compute_units(value: str) -> None:
+    """Set CoreML compute units (ALL, CPU_AND_GPU, CPU_AND_NE, CPU_ONLY)."""
+    normalized = value.strip().upper()
+    if normalized not in SUPPORTED_COREML_COMPUTE_UNITS:
+        raise ValueError(
+            f"Unsupported compute units: {value!r}. "
+            f"Supported: {', '.join(SUPPORTED_COREML_COMPUTE_UNITS)}"
+        )
+    config = load_config()
+    config.coreml_compute_units = normalized
     save_config(config)
 
 
@@ -530,7 +585,8 @@ def _clone_config(config: Config) -> Config:
         provider=config.provider,
         base_url=config.base_url,
         auto_index=config.auto_index,
-        local_cuda=config.local_cuda,
+        local_device=config.local_device,
+        coreml_compute_units=config.coreml_compute_units,
         rerank=config.rerank,
         flashrank_model=config.flashrank_model,
         remote_rerank=(
@@ -577,8 +633,18 @@ def _apply_config_payload(config: Config, payload: Mapping[str, object]) -> None
         config.base_url = _coerce_optional_str(payload["base_url"], "base_url")
     if "auto_index" in payload:
         config.auto_index = _coerce_bool(payload["auto_index"], "auto_index")
-    if "local_cuda" in payload:
-        config.local_cuda = _coerce_bool(payload["local_cuda"], "local_cuda")
+    # Handle local_device with backward compatibility for local_cuda
+    if "local_device" in payload:
+        device = _coerce_required_str(payload["local_device"], "local_device", DEFAULT_LOCAL_DEVICE)
+        config.local_device = device
+    elif "local_cuda" in payload:
+        # Backward compatibility: convert old local_cuda to local_device
+        local_cuda = _coerce_bool(payload["local_cuda"], "local_cuda")
+        config.local_device = "cuda" if local_cuda else "cpu"
+    if "coreml_compute_units" in payload:
+        config.coreml_compute_units = _coerce_required_str(
+            payload["coreml_compute_units"], "coreml_compute_units", DEFAULT_COREML_COMPUTE_UNITS
+        )
     if "rerank" in payload:
         config.rerank = _normalize_rerank(payload["rerank"])
     if "flashrank_model" in payload:

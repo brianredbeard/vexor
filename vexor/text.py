@@ -336,7 +336,7 @@ class Messages:
         "Rerank: {rerank}\n"
         "{flashrank_line}"
         "{remote_rerank_line}"
-        "Local CUDA: {local_cuda}\n"
+        "Local Device: {local_device}\n"
         "Custom base URL: {base_url}"
     )
     INFO_FLASHRANK_MODEL_SUMMARY = "FlashRank model: {value}"

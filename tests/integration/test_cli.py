@@ -176,7 +176,8 @@ def test_search_prints_index_message_when_auto_index_missing(tmp_path, monkeypat
     assert result.exit_code == 0
     output = strip_ansi(result.stdout)
     assert "Indexing files under" in output
-    assert str(tmp_path) in output
+    # Rich may wrap/truncate long paths, so check the basename is present
+    assert tmp_path.name in output
     assert "Searching cached index under" not in output
 
 
@@ -208,7 +209,7 @@ def test_search_prints_index_message_when_auto_index_stale(tmp_path, monkeypatch
     assert result.exit_code == 0
     output = strip_ansi(result.stdout)
     assert "Indexing files under" in output
-    assert str(tmp_path) in output
+    assert tmp_path.name in output
     assert "Searching cached index under" not in output
 
 
@@ -869,7 +870,7 @@ def test_config_set_and_show(tmp_path):
     assert data["provider"] == "gemini"
     assert data["base_url"] == "https://proxy.example.com"
     assert data["auto_index"] is True
-    assert data["local_cuda"] is False
+    assert data["local_device"] == "cpu"
     assert data["rerank"] == "bm25"
     assert data["flashrank_model"] == "ms-marco-MultiBERT-L-12"
 
@@ -1026,13 +1027,14 @@ def test_local_setup_updates_config(tmp_path, monkeypatch):
 
     monkeypatch.setattr("vexor.cli.resolve_fastembed_cache_dir", _cache_dir)
 
-    result = runner.invoke(app, ["local", "--setup", "--model", "local-model"])
+    result = runner.invoke(app, ["local", "--setup", "--model", "local-model", "--device", "cpu"])
 
     assert result.exit_code == 0
     config_path = tmp_path / "config" / "config.json"
     data = json.loads(config_path.read_text())
     assert data["provider"] == "local"
     assert data["model"] == "local-model"
+    assert data["local_device"] == "cpu"
 
 
 def test_local_cleanup_removes_cache(tmp_path, monkeypatch):
@@ -1052,21 +1054,21 @@ def test_local_cleanup_removes_cache(tmp_path, monkeypatch):
     assert not cache_dir.exists()
 
 
-def test_local_cuda_toggle_updates_config(tmp_path):
+def test_local_device_option_updates_config(tmp_path):
     runner = CliRunner()
 
-    result = runner.invoke(app, ["local", "--cuda"])
+    result = runner.invoke(app, ["local", "--device", "cuda"])
     assert result.exit_code == 0
 
     config_path = tmp_path / "config" / "config.json"
     data = json.loads(config_path.read_text())
-    assert data["local_cuda"] is True
+    assert data["local_device"] == "cuda"
 
-    result = runner.invoke(app, ["local", "--cpu"])
+    result = runner.invoke(app, ["local", "--device", "cpu"])
     assert result.exit_code == 0
 
     data = json.loads(config_path.read_text())
-    assert data["local_cuda"] is False
+    assert data["local_device"] == "cpu"
 
 
 def test_init_wizard_configures_remote(tmp_path):

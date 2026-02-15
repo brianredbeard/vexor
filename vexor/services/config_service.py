@@ -16,7 +16,7 @@ from ..config import (
     set_extract_backend,
     set_auto_index,
     set_flashrank_model,
-    set_local_cuda,
+    set_local_device,
     set_model,
     set_provider,
     set_rerank,
@@ -37,7 +37,7 @@ class ConfigUpdateResult:
     base_url_set: bool = False
     base_url_cleared: bool = False
     auto_index_set: bool = False
-    local_cuda_set: bool = False
+    local_device_set: bool = False
     rerank_set: bool = False
     flashrank_model_set: bool = False
     remote_rerank_url_set: bool = False
@@ -62,7 +62,7 @@ class ConfigUpdateResult:
                 self.base_url_set,
                 self.base_url_cleared,
                 self.auto_index_set,
-                self.local_cuda_set,
+                self.local_device_set,
                 self.rerank_set,
                 self.flashrank_model_set,
                 self.remote_rerank_url_set,
@@ -88,7 +88,7 @@ def apply_config_updates(
     base_url: str | None = None,
     clear_base_url: bool = False,
     auto_index: bool | None = None,
-    local_cuda: bool | None = None,
+    local_device: str | None = None,
     rerank: str | None = None,
     flashrank_model: str | None = None,
     remote_rerank_url: str | None = None,
@@ -144,9 +144,9 @@ def apply_config_updates(
     if auto_index is not None:
         set_auto_index(auto_index)
         result.auto_index_set = True
-    if local_cuda is not None:
-        set_local_cuda(local_cuda)
-        result.local_cuda_set = True
+    if local_device is not None:
+        set_local_device(local_device)
+        result.local_device_set = True
     if rerank is not None:
         set_rerank(rerank)
         result.rerank_set = True

@@ -138,7 +138,7 @@ def build_index(
     provider: str,
     base_url: str | None,
     api_key: str | None,
-    local_cuda: bool = False,
+    local_device: str = "cpu",
     exclude_patterns: Sequence[str] | None = None,
     extensions: Sequence[str] | None = None,
     no_cache: bool = False,
@@ -183,7 +183,7 @@ def build_index(
         provider=provider,
         base_url=base_url,
         api_key=api_key,
-        local_cuda=local_cuda,
+        local_device=local_device,
         embedding_dimensions=embedding_dimensions,
     )
 
@@ -390,7 +390,7 @@ def build_index_in_memory(
     provider: str,
     base_url: str | None,
     api_key: str | None,
-    local_cuda: bool = False,
+    local_device: str = "cpu",
     exclude_patterns: Sequence[str] | None = None,
     extensions: Sequence[str] | None = None,
     no_cache: bool = False,
@@ -438,7 +438,7 @@ def build_index_in_memory(
         provider=provider,
         base_url=base_url,
         api_key=api_key,
-        local_cuda=local_cuda,
+        local_device=local_device,
         embedding_dimensions=embedding_dimensions,
     )
     payloads = _payloads_for_files(

@@ -20,7 +20,8 @@ def test_load_config_defaults(tmp_path, monkeypatch):
     assert cfg.provider == config_module.DEFAULT_PROVIDER
     assert cfg.base_url is None
     assert cfg.auto_index is True
-    assert cfg.local_cuda is False
+    assert cfg.local_device == "cpu"
+    assert cfg.coreml_compute_units == "ALL"
     assert cfg.embed_concurrency == config_module.DEFAULT_EMBED_CONCURRENCY
     assert cfg.extract_concurrency == config_module.DEFAULT_EXTRACT_CONCURRENCY
     assert cfg.extract_backend == config_module.DEFAULT_EXTRACT_BACKEND
@@ -74,12 +75,100 @@ def test_save_and_load_auto_index(tmp_path, monkeypatch):
     assert cfg.auto_index is False
 
 
-def test_save_and_load_local_cuda(tmp_path, monkeypatch):
+def test_save_and_load_local_device(tmp_path, monkeypatch):
     _prepare_config(tmp_path, monkeypatch)
 
-    config_module.save_config(config_module.Config(local_cuda=True))
+    config_module.save_config(config_module.Config(local_device="coreml"))
     cfg = config_module.load_config()
-    assert cfg.local_cuda is True
+    assert cfg.local_device == "coreml"
+
+
+def test_save_and_load_coreml_compute_units(tmp_path, monkeypatch):
+    _prepare_config(tmp_path, monkeypatch)
+
+    config_module.save_config(config_module.Config(coreml_compute_units="CPU_AND_GPU"))
+    cfg = config_module.load_config()
+    assert cfg.coreml_compute_units == "CPU_AND_GPU"
+
+
+def test_backward_compat_local_cuda_true_becomes_cuda(tmp_path, monkeypatch):
+    """Test that old config with local_cuda: true loads as local_device: cuda"""
+    config_file = _prepare_config(tmp_path, monkeypatch)
+
+    # Manually write old-style config
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps({"local_cuda": True}))
+
+    cfg = config_module.load_config()
+    assert cfg.local_device == "cuda"
+
+
+def test_backward_compat_local_cuda_false_becomes_cpu(tmp_path, monkeypatch):
+    """Test that old config with local_cuda: false loads as local_device: cpu"""
+    config_file = _prepare_config(tmp_path, monkeypatch)
+
+    # Manually write old-style config
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps({"local_cuda": False}))
+
+    cfg = config_module.load_config()
+    assert cfg.local_device == "cpu"
+
+
+def test_local_device_takes_precedence_over_local_cuda(tmp_path, monkeypatch):
+    """Test that local_device takes precedence if both are present in config"""
+    config_file = _prepare_config(tmp_path, monkeypatch)
+
+    # Config with both fields - local_device should win
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps({"local_cuda": True, "local_device": "coreml"}))
+
+    cfg = config_module.load_config()
+    assert cfg.local_device == "coreml"
+
+
+def test_detect_default_device_darwin_arm64_with_coreml(monkeypatch):
+    """Test auto-detection returns coreml on ARM64 Darwin when CoreML EP available"""
+    import platform
+    from unittest.mock import patch
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(platform, "machine", lambda: "arm64")
+
+    with patch("vexor.providers.local.is_coreml_available", return_value=True):
+        device = config_module.detect_default_device()
+    assert device == "coreml"
+
+
+def test_detect_default_device_darwin_arm64_without_coreml(monkeypatch):
+    """Test auto-detection returns cpu on ARM64 Darwin when CoreML EP unavailable"""
+    import platform
+    from unittest.mock import patch
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(platform, "machine", lambda: "arm64")
+
+    with patch("vexor.providers.local.is_coreml_available", return_value=False):
+        device = config_module.detect_default_device()
+    assert device == "cpu"
+
+
+def test_detect_default_device_darwin_x86(monkeypatch):
+    """Test auto-detection returns cpu on Darwin x86"""
+    import platform
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+
+    device = config_module.detect_default_device()
+    assert device == "cpu"
+
+
+def test_detect_default_device_linux(monkeypatch):
+    """Test auto-detection returns cpu on Linux"""
+    import platform
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+
+    device = config_module.detect_default_device()
+    assert device == "cpu"
 
 
 def test_save_and_load_embed_concurrency(tmp_path, monkeypatch):
@@ -201,7 +290,7 @@ def test_update_config_from_json_merges(tmp_path, monkeypatch):
             embed_concurrency=4,
             extract_concurrency=5,
             auto_index=True,
-            local_cuda=False,
+            local_device="cpu",
         )
     )
 

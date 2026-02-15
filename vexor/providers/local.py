@@ -10,6 +10,18 @@ import numpy as np
 from ..config import local_model_dir
 from ..text import Messages
 
+# Lazy-loaded onnxruntime module (None if not installed)
+try:
+    import onnxruntime as ort
+except ImportError:
+    ort = None  # type: ignore[assignment]
+
+# Lazy-loaded tokenizers module
+try:
+    from tokenizers import Tokenizer
+except ImportError:
+    Tokenizer = None  # type: ignore[assignment,misc]
+
 
 def _load_fastembed():
     try:
@@ -72,6 +84,100 @@ def _register_custom_model(text_embedding_cls, model_name: str) -> bool:
     return True
 
 
+def is_coreml_available() -> bool:
+    """Check if CoreML execution provider is available in onnxruntime."""
+    if ort is None:
+        return False
+    try:
+        return "CoreMLExecutionProvider" in ort.get_available_providers()
+    except Exception:
+        return False
+
+
+def _resolve_onnx_model_path(model_name: str) -> str:
+    """Resolve the ONNX model file path from the fastembed cache."""
+    cache_dir = resolve_fastembed_cache_dir()
+    # Check _CUSTOM_TEXT_MODELS for model_file path
+    spec = _CUSTOM_TEXT_MODELS.get(model_name.strip().lower())
+    model_file = spec["model_file"] if spec else "onnx/model.onnx"
+
+    # fastembed caches models in various formats:
+    # - cache_dir/model_name_sanitized/model_file
+    # - cache_dir/models--org--name/snapshots/hash/model_file  (HuggingFace hub format)
+    sanitized = model_name.replace("/", "_")
+    hub_style = f"models--{model_name.replace('/', '--')}"
+    candidates = [
+        cache_dir / sanitized / str(model_file),
+        cache_dir / model_name / str(model_file),
+    ]
+    # Also check for onnx_models directory pattern
+    candidates.append(cache_dir / sanitized / "onnx" / "model.onnx")
+    # Check HuggingFace hub cache format (models--org--name/snapshots/*/model_file)
+    hub_dir = cache_dir / hub_style / "snapshots"
+    if hub_dir.exists():
+        for snapshot_dir in hub_dir.iterdir():
+            if snapshot_dir.is_dir():
+                candidates.append(snapshot_dir / str(model_file))
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    # If not found, try to download via fastembed first
+    try:
+        TextEmbedding = _load_fastembed()
+        _model = TextEmbedding(model_name=model_name, cache_dir=str(cache_dir))
+        del _model
+    except Exception:
+        pass
+
+    # Retry after download
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    # Search more broadly in the cache directory
+    for onnx_file in cache_dir.rglob("model.onnx"):
+        if sanitized in str(onnx_file) or model_name in str(onnx_file):
+            return str(onnx_file)
+
+    raise FileNotFoundError(
+        f"Could not find ONNX model file for '{model_name}' in {cache_dir}. "
+        f"Run 'vexor local --device cpu --setup' first to download the model."
+    )
+
+
+def _resolve_tokenizer_path(model_name: str) -> str:
+    """Resolve the tokenizer.json path from the fastembed cache."""
+    cache_dir = resolve_fastembed_cache_dir()
+    sanitized = model_name.replace("/", "_")
+
+    hub_style = f"models--{model_name.replace('/', '--')}"
+    candidates = [
+        cache_dir / sanitized / "tokenizer.json",
+        cache_dir / model_name / "tokenizer.json",
+    ]
+    hub_dir = cache_dir / hub_style / "snapshots"
+    if hub_dir.exists():
+        for snapshot_dir in hub_dir.iterdir():
+            if snapshot_dir.is_dir():
+                candidates.append(snapshot_dir / "tokenizer.json")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    # Search more broadly
+    for tok_file in cache_dir.rglob("tokenizer.json"):
+        if sanitized in str(tok_file) or model_name in str(tok_file):
+            return str(tok_file)
+
+    raise FileNotFoundError(
+        f"Could not find tokenizer for '{model_name}' in {cache_dir}. "
+        f"Run 'vexor local --device cpu --setup' first to download the model."
+    )
+
+
 class LocalEmbeddingBackend:
     """Embedding backend that runs a lightweight local model via fastembed."""
 
@@ -131,6 +237,124 @@ class LocalEmbeddingBackend:
         if not vectors:
             raise RuntimeError(Messages.ERROR_NO_EMBEDDINGS)
         return np.vstack(vectors)
+
+
+class CoreMLEmbeddingBackend:
+    """Embedding backend using ONNX Runtime with CoreML execution provider."""
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        chunk_size: int | None = None,
+        concurrency: int = 1,
+        compute_units: str = "ALL",
+    ) -> None:
+        if ort is None:
+            raise RuntimeError(
+                "onnxruntime is required for CoreML backend. "
+                "Install with: uv pip install 'vexor[local-coreml]'"
+            )
+        if Tokenizer is None:
+            raise RuntimeError(
+                "tokenizers is required for CoreML backend. "
+                "Install with: uv pip install tokenizers"
+            )
+
+        self.model_name = model_name
+        self.chunk_size = chunk_size if chunk_size and chunk_size > 0 else None
+        self.concurrency = max(int(concurrency or 1), 1)
+        self.compute_units = compute_units
+
+        # Resolve model and tokenizer paths
+        model_path = _resolve_onnx_model_path(model_name)
+        tokenizer_path = _resolve_tokenizer_path(model_name)
+
+        # Set up CoreML cache directory for compiled models
+        cache_dir = resolve_fastembed_cache_dir()
+        coreml_cache = cache_dir / "coreml_cache"
+        coreml_cache.mkdir(parents=True, exist_ok=True)
+
+        # Configure CoreML provider with fallback to CPU
+        providers = [
+            (
+                "CoreMLExecutionProvider",
+                {
+                    "MLComputeUnits": compute_units,
+                    "ModelCacheDirectory": str(coreml_cache),
+                },
+            ),
+            "CPUExecutionProvider",
+        ]
+
+        try:
+            self._session = ort.InferenceSession(
+                model_path,
+                providers=providers,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                Messages.ERROR_LOCAL_MODEL_LOAD.format(
+                    model=model_name, reason=str(exc)
+                )
+            ) from exc
+
+        self._tokenizer = Tokenizer.from_file(tokenizer_path)
+
+    def embed(self, texts: Sequence[str]) -> np.ndarray:
+        if not texts:
+            return np.empty((0, 0), dtype=np.float32)
+
+        vectors: list[np.ndarray] = []
+        for chunk in _chunk(texts, self.chunk_size):
+            chunk_vectors = self._embed_batch(list(chunk))
+            vectors.append(chunk_vectors)
+
+        if not vectors:
+            raise RuntimeError(Messages.ERROR_NO_EMBEDDINGS)
+        return np.vstack(vectors)
+
+    def _embed_batch(self, texts: list[str]) -> np.ndarray:
+        """Tokenize, run ONNX inference, apply mean pooling, normalize."""
+        encodings = self._tokenizer.encode_batch(texts)
+
+        # Build input tensors
+        max_len = max(len(e.ids) for e in encodings)
+        input_ids = np.zeros((len(texts), max_len), dtype=np.int64)
+        attention_mask = np.zeros((len(texts), max_len), dtype=np.int64)
+
+        for i, enc in enumerate(encodings):
+            length = len(enc.ids)
+            input_ids[i, :length] = enc.ids
+            attention_mask[i, :length] = enc.attention_mask
+
+        # Run ONNX inference
+        inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+        # Add token_type_ids if the model expects it
+        session_inputs = {inp.name for inp in self._session.get_inputs()}
+        if "token_type_ids" in session_inputs:
+            inputs["token_type_ids"] = np.zeros_like(input_ids)
+
+        outputs = self._session.run(None, inputs)
+        # outputs[0] is last_hidden_state: (batch, seq_len, hidden_dim)
+        hidden_states = outputs[0]
+
+        # Mean pooling with attention mask
+        mask_expanded = attention_mask[:, :, np.newaxis].astype(np.float32)
+        sum_embeddings = np.sum(hidden_states * mask_expanded, axis=1)
+        sum_mask = np.sum(mask_expanded, axis=1)
+        sum_mask = np.clip(sum_mask, a_min=1e-9, a_max=None)
+        embeddings = sum_embeddings / sum_mask
+
+        # L2 normalize
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms = np.clip(norms, a_min=1e-9, a_max=None)
+        embeddings = embeddings / norms
+
+        return embeddings.astype(np.float32)
 
 
 def _chunk(items: Sequence[str], size: int | None) -> Iterator[Sequence[str]]:

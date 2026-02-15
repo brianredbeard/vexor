@@ -18,7 +18,7 @@ from .config import (
     resolve_base_url,
 )
 from .providers.gemini import GeminiEmbeddingBackend
-from .providers.local import LocalEmbeddingBackend
+from .providers.local import CoreMLEmbeddingBackend, LocalEmbeddingBackend
 from .providers.openai import OpenAIEmbeddingBackend
 from .text import Messages
 
@@ -56,7 +56,8 @@ class VexorSearcher:
         provider: str = DEFAULT_PROVIDER,
         base_url: str | None = None,
         api_key: str | None = None,
-        local_cuda: bool = False,
+        local_device: str = "cpu",
+        coreml_compute_units: str = "ALL",
         embedding_dimensions: int | None = None,
     ) -> None:
         self.model_name = model_name
@@ -65,7 +66,8 @@ class VexorSearcher:
         self.provider = (provider or DEFAULT_PROVIDER).lower()
         self.base_url = resolve_base_url(self.provider, base_url)
         self.api_key = resolve_api_key(api_key, self.provider)
-        self.local_cuda = bool(local_cuda)
+        self.local_device = local_device or "cpu"
+        self.coreml_compute_units = coreml_compute_units or "ALL"
         self.embedding_dimensions = embedding_dimensions if embedding_dimensions and embedding_dimensions > 0 else None
         if backend is not None:
             self._backend = backend
@@ -138,12 +140,20 @@ class VexorSearcher:
                 api_key=self.api_key,
             )
         if self.provider == "local":
+            if self.local_device == "coreml":
+                self._device = f"{self.model_name} via CoreML (Metal/ANE)"
+                return CoreMLEmbeddingBackend(
+                    model_name=self.model_name,
+                    chunk_size=self.batch_size,
+                    concurrency=self.embed_concurrency,
+                    compute_units=self.coreml_compute_units,
+                )
             self._device = f"{self.model_name} via local model"
             return LocalEmbeddingBackend(
                 model_name=self.model_name,
                 chunk_size=self.batch_size,
                 concurrency=self.embed_concurrency,
-                cuda=self.local_cuda,
+                cuda=self.local_device == "cuda",
             )
         if self.provider == "voyageai":
             self._device = f"{self.model_name} via Voyage AI API"

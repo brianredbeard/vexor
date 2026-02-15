@@ -450,7 +450,8 @@ def search(
         provider=provider,
         base_url=base_url,
         api_key=api_key,
-        local_cuda=bool(config.local_cuda),
+        local_device=config.local_device,
+        coreml_compute_units=config.coreml_compute_units,
         exclude_patterns=normalized_excludes,
         extensions=normalized_exts,
         auto_index=auto_index,
@@ -690,7 +691,7 @@ def index(
             provider=provider,
             base_url=base_url,
             api_key=api_key,
-            local_cuda=bool(config.local_cuda),
+            local_device=config.local_device,
             exclude_patterns=normalized_excludes,
             extensions=normalized_exts,
             embedding_dimensions=config.embedding_dimensions,
@@ -1253,7 +1254,7 @@ def config(
                     rerank=rerank,
                     flashrank_line=flashrank_line,
                     remote_rerank_line=remote_rerank_line,
-                    local_cuda="yes" if cfg.local_cuda else "no",
+                    local_device=cfg.local_device,
                     base_url=cfg.base_url or "none",
                 ),
                 Styles.INFO,
@@ -1305,15 +1306,11 @@ def local(
         "--clean-up",
         help=Messages.HELP_LOCAL_CLEANUP,
     ),
-    cuda: bool = typer.Option(
-        False,
-        "--cuda",
-        help=Messages.HELP_LOCAL_CUDA,
-    ),
-    cpu: bool = typer.Option(
-        False,
-        "--cpu",
-        help=Messages.HELP_LOCAL_CPU,
+    device: str = typer.Option(
+        "auto",
+        "--device",
+        "-d",
+        help="Device for local inference: auto, cpu, cuda, coreml",
     ),
     model: str = typer.Option(
         DEFAULT_LOCAL_MODEL,
@@ -1323,15 +1320,8 @@ def local(
     ),
 ) -> None:
     """Manage local embedding models."""
-    if cuda and cpu:
-        raise typer.BadParameter(Messages.ERROR_LOCAL_CUDA_CONFLICT)
-    if clean_up and (setup or cuda or cpu):
+    if clean_up and setup:
         raise typer.BadParameter(Messages.ERROR_LOCAL_OPTIONS_CONFLICT)
-    local_cuda: bool | None = None
-    if cuda:
-        local_cuda = True
-    if cpu:
-        local_cuda = False
     if clean_up:
         cache_dir = resolve_fastembed_cache_dir(create=False)
         if not cache_dir.exists():
@@ -1356,17 +1346,23 @@ def local(
             _styled(Messages.INFO_LOCAL_CACHE_CLEARED.format(path=cache_dir), Styles.SUCCESS)
         )
         raise typer.Exit(code=0)
-    if not setup and local_cuda is None:
-        console.print(_styled(Messages.INFO_LOCAL_SETUP_HINT, Styles.INFO))
-        raise typer.Exit(code=0)
-    if not setup and local_cuda is not None:
-        apply_config_updates(local_cuda=local_cuda)
-        message = (
-            Messages.INFO_LOCAL_CUDA_ENABLED
-            if local_cuda
-            else Messages.INFO_LOCAL_CUDA_DISABLED
+
+    # Resolve device
+    from .config import detect_default_device, SUPPORTED_LOCAL_DEVICES
+    effective_device = device.strip().lower()
+    if effective_device == "auto":
+        effective_device = detect_default_device()
+
+    if effective_device not in SUPPORTED_LOCAL_DEVICES:
+        raise typer.BadParameter(
+            f"Unsupported device: {device}. Choices: auto, {', '.join(SUPPORTED_LOCAL_DEVICES)}"
         )
-        console.print(_styled(message, Styles.SUCCESS))
+
+    if not setup:
+        apply_config_updates(local_device=effective_device)
+        console.print(
+            _styled(f"Local device set to: {effective_device}", Styles.SUCCESS)
+        )
         raise typer.Exit(code=0)
 
     clean_model = model.strip()
@@ -1374,12 +1370,9 @@ def local(
         raise typer.BadParameter(Messages.ERROR_LOCAL_MODEL_EMPTY)
 
     console.print(_styled(Messages.INFO_LOCAL_SETUP_START.format(model=clean_model), Styles.INFO))
-    if local_cuda is None:
-        config_snapshot = load_config()
-        effective_cuda = bool(config_snapshot.local_cuda)
-    else:
-        effective_cuda = local_cuda
-    if effective_cuda:
+
+    # Device-specific validation
+    if effective_device == "cuda":
         try:
             import onnxruntime as ort
         except Exception as exc:
@@ -1399,12 +1392,6 @@ def local(
             console.print(
                 _styled(Messages.DOCTOR_LOCAL_CUDA_MISSING, Styles.ERROR)
             )
-            console.print(
-                _styled(
-                    Messages.DOCTOR_LOCAL_CUDA_IMPORT_DETAIL.format(reason=str(exc)),
-                    Styles.ERROR,
-                )
-            )
             raise typer.Exit(code=1)
         if "CUDAExecutionProvider" not in providers:
             console.print(_styled(Messages.DOCTOR_LOCAL_CUDA_MISSING, Styles.ERROR))
@@ -1417,8 +1404,24 @@ def local(
                 )
             )
             raise typer.Exit(code=1)
+    elif effective_device == "coreml":
+        from .providers.local import is_coreml_available
+        if not is_coreml_available():
+            console.print(
+                _styled("CoreML execution provider not available. Install onnxruntime on macOS.", Styles.ERROR)
+            )
+            raise typer.Exit(code=1)
+
+    # Test the backend
     try:
-        backend = LocalEmbeddingBackend(model_name=clean_model, cuda=effective_cuda)
+        if effective_device == "coreml":
+            from .providers.local import CoreMLEmbeddingBackend
+            backend = CoreMLEmbeddingBackend(model_name=clean_model)
+        else:
+            backend = LocalEmbeddingBackend(
+                model_name=clean_model,
+                cuda=effective_device == "cuda",
+            )
         vectors = backend.embed(["test"])
     except RuntimeError as exc:
         console.print(_styled(str(exc), Styles.ERROR))
@@ -1431,15 +1434,11 @@ def local(
     apply_config_updates(
         provider="local",
         model=clean_model,
-        local_cuda=local_cuda,
+        local_device=effective_device,
     )
-    if local_cuda is not None:
-        message = (
-            Messages.INFO_LOCAL_CUDA_ENABLED
-            if local_cuda
-            else Messages.INFO_LOCAL_CUDA_DISABLED
-        )
-        console.print(_styled(message, Styles.SUCCESS))
+    console.print(
+        _styled(f"Local device set to: {effective_device}", Styles.SUCCESS)
+    )
     cache_dir = resolve_fastembed_cache_dir()
     console.print(_styled(Messages.INFO_LOCAL_CACHE_DIR.format(path=cache_dir), Styles.INFO))
     console.print(_styled(Messages.INFO_LOCAL_SETUP_DONE.format(model=clean_model), Styles.SUCCESS))
@@ -1549,7 +1548,7 @@ def doctor(
             api_key=config.api_key,
             base_url=config.base_url,
             skip_api_test=skip_api_test,
-            local_cuda=bool(config.local_cuda),
+            local_device=config.local_device,
             rerank=config.rerank,
             flashrank_model=config.flashrank_model,
             remote_rerank=config.remote_rerank,

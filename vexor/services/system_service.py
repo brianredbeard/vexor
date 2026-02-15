@@ -107,7 +107,7 @@ def check_api_connectivity(
     model: str,
     api_key: str | None,
     base_url: str | None,
-    local_cuda: bool = False,
+    local_device: str = "cpu",
 ) -> DoctorCheckResult:
     """Test API connectivity with a minimal embedding request."""
     from ..config import resolve_api_key
@@ -115,9 +115,9 @@ def check_api_connectivity(
     normalized = (provider or "").lower()
     if normalized == "local":
         try:
-            from ..providers.local import LocalEmbeddingBackend
+            from ..providers.local import LocalEmbeddingBackend, CoreMLEmbeddingBackend, is_coreml_available
 
-            if local_cuda:
+            if local_device == "cuda":
                 try:
                     import onnxruntime as ort
                 except Exception as exc:
@@ -145,8 +145,19 @@ def check_api_connectivity(
                             providers=", ".join(providers) if providers else "none"
                         ),
                     )
+            elif local_device == "coreml":
+                if not is_coreml_available():
+                    return DoctorCheckResult(
+                        name="Local Model",
+                        passed=False,
+                        message="CoreML execution provider not available",
+                        detail="Install onnxruntime on macOS with Apple Silicon to use CoreML.",
+                    )
 
-            backend = LocalEmbeddingBackend(model_name=model, cuda=local_cuda)
+            if local_device == "coreml":
+                backend = CoreMLEmbeddingBackend(model_name=model)
+            else:
+                backend = LocalEmbeddingBackend(model_name=model, cuda=local_device == "cuda")
             result = backend.embed(["test"])
             if result.shape[0] == 1 and result.shape[1] > 0:
                 return DoctorCheckResult(
@@ -368,7 +379,7 @@ def run_all_doctor_checks(
     base_url: str | None,
     *,
     skip_api_test: bool = False,
-    local_cuda: bool = False,
+    local_device: str = "cpu",
     rerank: str | None = None,
     flashrank_model: str | None = None,
     remote_rerank: RemoteRerankConfig | None = None,
@@ -395,7 +406,7 @@ def run_all_doctor_checks(
                 model,
                 api_key,
                 base_url,
-                local_cuda=local_cuda,
+                local_device=local_device,
             )
         )
     return results
