@@ -76,6 +76,15 @@ class TestIsMlxAvailable:
 
 
 class TestMLXEmbeddingBackend:
+    @pytest.fixture(autouse=True)
+    def _preserve_seq_lens(self):
+        """Save and restore SEQ_LENS to prevent pollution across tests."""
+        import mlx_embedding_models.embedding as embedding_module
+
+        original = embedding_module.SEQ_LENS.copy()
+        yield embedding_module
+        embedding_module.SEQ_LENS[:] = original
+
     def _make_backend(self, **kwargs):
         from vexor.providers.local import MLXEmbeddingBackend
 
@@ -273,8 +282,10 @@ class TestMLXEmbeddingBackend:
             self._make_backend(model_name="broken-model")
 
     @patch("vexor.providers.local.mlx_embedding_models")
-    def test_constructor_caps_max_length_to_512(self, mock_mlx_models):
-        """MLXEmbeddingBackend caps model max_length to 512 to avoid SEQ_LENS overflow."""
+    def test_constructor_extends_seq_lens_for_long_context_model(self, mock_mlx_models):
+        """MLXEmbeddingBackend extends SEQ_LENS for models with max_length > 512."""
+        import mlx_embedding_models.embedding as embedding_module
+
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
         mock_model.max_length = 8192  # bge-m3 default
@@ -282,4 +293,85 @@ class TestMLXEmbeddingBackend:
 
         self._make_backend()
 
-        assert mock_model.max_length == 512
+        assert max(embedding_module.SEQ_LENS) > 8192, (
+            "SEQ_LENS should include sentinel above max_length"
+        )
+        assert 8192 in embedding_module.SEQ_LENS, (
+            "SEQ_LENS should include max_length value"
+        )
+        assert max(embedding_module.SEQ_LENS) >= 8192 + 32, (
+            "Sentinel should be at least max_length + 32"
+        )
+
+    @patch("vexor.providers.local.mlx_embedding_models")
+    def test_constructor_preserves_model_max_length(self, mock_mlx_models):
+        """MLXEmbeddingBackend preserves model max_length (does not cap it)."""
+        mock_model = MagicMock()
+        mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 8192  # bge-m3 default
+        mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
+
+        self._make_backend()
+
+        assert mock_model.max_length == 8192, (
+            "Model max_length should be preserved, not capped"
+        )
+
+    @patch("vexor.providers.local.mlx_embedding_models")
+    def test_constructor_does_not_modify_seq_lens_for_short_context_model(
+        self, mock_mlx_models
+    ):
+        """MLXEmbeddingBackend does not modify SEQ_LENS for models with max_length <= 512."""
+        import mlx_embedding_models.embedding as embedding_module
+
+        mock_model = MagicMock()
+        mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512  # Standard model
+        mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
+
+        original_len = len(embedding_module.SEQ_LENS)
+        self._make_backend()
+
+        assert len(embedding_module.SEQ_LENS) == original_len, (
+            "SEQ_LENS should not be modified for models with max_length <= 512"
+        )
+
+    @patch("vexor.providers.local.mlx_embedding_models")
+    def test_seq_lens_sentinel_covers_construct_batch_boundary(self, mock_mlx_models):
+        """SEQ_LENS sentinel value is strictly greater than max_length for _construct_batch safety."""
+        import mlx_embedding_models.embedding as embedding_module
+
+        mock_model = MagicMock()
+        mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 2048  # nomic-text-v1.5 default
+        mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
+
+        self._make_backend()
+
+        max_seq_len = max(embedding_module.SEQ_LENS)
+        assert max_seq_len > 2048, (
+            f"Sentinel {max_seq_len} must be > max_length {2048} for _construct_batch safety"
+        )
+        assert max_seq_len >= 2048 + 32, (
+            f"Sentinel {max_seq_len} should be at least max_length + 32 = {2048 + 32}"
+        )
+
+    @patch("vexor.providers.local.mlx_embedding_models")
+    def test_seq_lens_extension_is_idempotent(self, mock_mlx_models):
+        """SEQ_LENS extension is idempotent — creating two backends doesn't double-extend."""
+        import mlx_embedding_models.embedding as embedding_module
+
+        mock_model = MagicMock()
+        mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 8192
+        mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
+
+        self._make_backend()
+        len_after_first = len(embedding_module.SEQ_LENS)
+
+        self._make_backend()
+        len_after_second = len(embedding_module.SEQ_LENS)
+
+        assert len_after_second == len_after_first, (
+            f"SEQ_LENS grew from {len_after_first} to {len_after_second} on second instantiation"
+        )

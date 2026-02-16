@@ -16,8 +16,10 @@ from ..text import Messages
 # Lazy-loaded mlx_embedding_models module (None if not installed)
 try:
     import mlx_embedding_models
+    import mlx_embedding_models.embedding as mlx_embedding
 except ImportError:
     mlx_embedding_models = None  # type: ignore[assignment]
+    mlx_embedding = None  # type: ignore[assignment]
 
 
 @contextmanager
@@ -211,11 +213,47 @@ class MLXEmbeddingBackend:
                         )
                     ) from exc
 
-        # Cap max_length to 512 — mlx-embedding-models' internal SEQ_LENS
-        # bucketing only covers up to 512. Long-context models (bge-m3=8192,
-        # nomic-v1.5=2048) crash with IndexError without this.
+        # Extend SEQ_LENS for long-context models — mlx-embedding-models' internal
+        # SEQ_LENS bucketing only covers up to 512 by default. Long-context models
+        # (bge-m3=8192, nomic-v1.5=2048) crash with IndexError without extension.
         # See: https://github.com/taylorai/mlx_embedding_models/issues/7
-        self._model.max_length = min(self._model.max_length, 512)
+        if mlx_embedding is not None and self._model.max_length > 512:
+            # Defensive check: ensure SEQ_LENS is mutable (not stripped by -O)
+            if not isinstance(mlx_embedding.SEQ_LENS, list):
+                raise TypeError(
+                    "mlx_embedding_models.embedding.SEQ_LENS must be a list for mutation"
+                )
+
+            current_max = max(mlx_embedding.SEQ_LENS)
+            model_max = self._model.max_length
+
+            # Only extend if needed (idempotent)
+            # The -1 accounts for the need for a sentinel value above max_length
+            if model_max > current_max - 1:
+                # Extension strategy:
+                # - 32-token steps from 544 to 1024 (matches 128-512 pattern)
+                # - 512-token steps from 1024 to max_length
+                # - Sentinel at max_length + 32 (for _construct_batch strict > comparison)
+                new_buckets = []
+
+                # Add 32-token steps in 512-1024 transition zone
+                for bucket in range(544, 1024 + 1, 32):
+                    if bucket > current_max:
+                        new_buckets.append(bucket)
+
+                # Add 512-token steps from 1024 to max_length
+                for bucket in range(1024, model_max + 1, 512):
+                    if bucket > current_max and bucket not in new_buckets:
+                        new_buckets.append(bucket)
+
+                # Add sentinel value above max_length
+                sentinel = model_max + 32
+                if sentinel > current_max:
+                    new_buckets.append(sentinel)
+
+                # Extend SEQ_LENS with new buckets
+                if new_buckets:
+                    mlx_embedding.SEQ_LENS.extend(sorted(new_buckets))
 
         # CRITICAL: Apply monkey-patch for transformers>=5.0 compatibility
         # transformers>=5.0 removed batch_encode_plus from TokenizersBackend,
