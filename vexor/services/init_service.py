@@ -158,36 +158,53 @@ def _collect_provider_settings(*, dry_run: bool) -> dict[str, object]:
 
 
 def _collect_local_settings(*, dry_run: bool) -> dict[str, object] | None:
+    import platform
+
     _print_step_header("1a", Messages.INIT_STEP_LOCAL_HARDWARE)
     _print_option("A", Messages.INIT_OPTION_CPU, Messages.INIT_OPTION_CPU_DESC)
     _print_option("B", Messages.INIT_OPTION_CUDA, Messages.INIT_OPTION_CUDA_DESC)
+    is_apple_silicon = platform.system() == "Darwin" and platform.machine() == "arm64"
+    if is_apple_silicon:
+        _print_option("M", "MLX (Metal GPU)", "Use Apple GPU via MLX for native acceleration")
     console.print()
+
+    choices: dict[str, str] = {
+        "a": "cpu",
+        "cpu": "cpu",
+        "b": "cuda",
+        "gpu": "cuda",
+        "cuda": "cuda",
+    }
+    default_choice = "A"
+    allowed = "A/B"
+    if is_apple_silicon:
+        choices.update({"m": "mlx", "mlx": "mlx", "metal": "mlx"})
+        default_choice = "M"
+        allowed = "A/B/M"
+
     hardware = _prompt_choice(
         Messages.INIT_PROMPT_LOCAL_HARDWARE,
-        {
-            "a": "cpu",
-            "cpu": "cpu",
-            "b": "cuda",
-            "gpu": "cuda",
-            "cuda": "cuda",
-        },
-        default="A",
-        allowed="A/B",
+        choices,
+        default=default_choice,
+        allowed=allowed,
     )
-    use_cuda = hardware == "cuda"
-    if use_cuda and not _ensure_cuda_available():
+    local_device = hardware
+    if local_device == "cuda" and not _ensure_cuda_available():
         if typer.confirm(Messages.INIT_CONFIRM_FALLBACK_CPU, default=True):
-            use_cuda = False
+            local_device = "cpu"
     console.print()
 
     if not _is_fastembed_available():
-        if typer.confirm(
-            Messages.INIT_CONFIRM_INSTALL_LOCAL_CUDA
-            if use_cuda
-            else Messages.INIT_CONFIRM_INSTALL_LOCAL,
-            default=True,
-        ):
-            extras = "local-cuda" if use_cuda else "local"
+        if local_device == "cuda":
+            install_prompt = Messages.INIT_CONFIRM_INSTALL_LOCAL_CUDA
+            extras = "local-cuda"
+        elif local_device == "mlx":
+            install_prompt = Messages.INIT_CONFIRM_INSTALL_LOCAL_CUDA
+            extras = "local-mlx"
+        else:
+            install_prompt = Messages.INIT_CONFIRM_INSTALL_LOCAL
+            extras = "local"
+        if typer.confirm(install_prompt, default=True):
             if not _install_extras(extras, dry_run=dry_run):
                 if typer.confirm(Messages.INIT_CONFIRM_SWITCH_REMOTE, default=True):
                     return None
@@ -204,7 +221,7 @@ def _collect_local_settings(*, dry_run: bool) -> dict[str, object] | None:
     ):
         if not _prepare_local_model(
             DEFAULT_LOCAL_MODEL,
-            use_cuda,
+            local_device == "cuda",
             dry_run=dry_run,
         ):
             if typer.confirm(Messages.INIT_CONFIRM_SWITCH_REMOTE, default=True):
@@ -213,7 +230,7 @@ def _collect_local_settings(*, dry_run: bool) -> dict[str, object] | None:
     return {
         "provider": "local",
         "model": DEFAULT_LOCAL_MODEL,
-        "local_cuda": use_cuda,
+        "local_device": local_device,
     }
 
 
@@ -478,7 +495,7 @@ def _run_doctor_checks() -> None:
             api_key=config.api_key,
             base_url=config.base_url,
             skip_api_test=False,
-            local_cuda=bool(config.local_cuda),
+            local_device=config.local_device,
             rerank=config.rerank,
             flashrank_model=config.flashrank_model,
             remote_rerank=config.remote_rerank,

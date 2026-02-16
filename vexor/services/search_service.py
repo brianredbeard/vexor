@@ -44,7 +44,7 @@ class SearchRequest:
     provider: str
     base_url: str | None
     api_key: str | None
-    local_cuda: bool
+    local_device: str
     exclude_patterns: tuple[str, ...]
     extensions: tuple[str, ...]
     auto_index: bool = True
@@ -57,6 +57,7 @@ class SearchRequest:
     flashrank_model: str | None = None
     remote_rerank: RemoteRerankConfig | None = None
     embedding_dimensions: int | None = None
+    coreml_compute_units: str = "ALL"
 
 
 @dataclass(slots=True)
@@ -406,7 +407,7 @@ def perform_search(request: SearchRequest) -> SearchResponse:
             provider=request.provider,
             base_url=request.base_url,
             api_key=request.api_key,
-            local_cuda=request.local_cuda,
+            local_device=request.local_device,
             exclude_patterns=request.exclude_patterns,
             extensions=request.extensions,
             no_cache=request.no_cache,
@@ -491,7 +492,7 @@ def perform_search(request: SearchRequest) -> SearchResponse:
             provider=request.provider,
             base_url=request.base_url,
             api_key=request.api_key,
-            local_cuda=request.local_cuda,
+            local_device=request.local_device,
             exclude_patterns=index_excludes,
             extensions=index_extensions,
             no_cache=request.no_cache,
@@ -572,7 +573,7 @@ def perform_search(request: SearchRequest) -> SearchResponse:
         provider=request.provider,
         base_url=request.base_url,
         api_key=request.api_key,
-        local_cuda=request.local_cuda,
+        local_device=request.local_device,
         embedding_dimensions=request.embedding_dimensions,
     )
     query_vector = None
@@ -736,7 +737,7 @@ def search_from_vectors(
         provider=request.provider,
         base_url=request.base_url,
         api_key=request.api_key,
-        local_cuda=request.local_cuda,
+        local_device=request.local_device,
         embedding_dimensions=request.embedding_dimensions,
     )
     query_vector = None
@@ -858,7 +859,7 @@ def _perform_search_with_temporary_index(request: SearchRequest) -> SearchRespon
         provider=request.provider,
         base_url=request.base_url,
         api_key=request.api_key,
-        local_cuda=request.local_cuda,
+        local_device=request.local_device,
         exclude_patterns=request.exclude_patterns,
         extensions=request.extensions,
         no_cache=request.no_cache,

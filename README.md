@@ -175,7 +175,7 @@ Vexor supports both remote API providers (`openai`, `gemini`, `voyageai`, `custo
 - Remote providers use `api_key` and optional `base_url`.
 - `voyageai` defaults to `https://api.voyageai.com/v1` when `base_url` is not set.
 - `custom` is OpenAI-compatible and requires both `model` and `base_url`.
-- Local provider ignores `api_key/base_url` and only uses `model` plus `local_cuda` (CPU/GPU switch).
+- Local provider ignores `api_key/base_url` and uses `model` plus `local_device` (`cpu`, `cuda`, or `mlx`).
 
 ### Embedding Dimensions
 

@@ -20,7 +20,7 @@ def test_load_config_defaults(tmp_path, monkeypatch):
     assert cfg.provider == config_module.DEFAULT_PROVIDER
     assert cfg.base_url is None
     assert cfg.auto_index is True
-    assert cfg.local_cuda is False
+    assert cfg.local_device == "cpu"
     assert cfg.embed_concurrency == config_module.DEFAULT_EMBED_CONCURRENCY
     assert cfg.extract_concurrency == config_module.DEFAULT_EXTRACT_CONCURRENCY
     assert cfg.extract_backend == config_module.DEFAULT_EXTRACT_BACKEND
@@ -74,12 +74,66 @@ def test_save_and_load_auto_index(tmp_path, monkeypatch):
     assert cfg.auto_index is False
 
 
-def test_save_and_load_local_cuda(tmp_path, monkeypatch):
+def test_save_and_load_local_device(tmp_path, monkeypatch):
     _prepare_config(tmp_path, monkeypatch)
 
-    config_module.save_config(config_module.Config(local_cuda=True))
+    config_module.save_config(config_module.Config(local_device="mlx"))
     cfg = config_module.load_config()
-    assert cfg.local_cuda is True
+    assert cfg.local_device == "mlx"
+
+
+def test_backward_compat_local_cuda_true_becomes_cuda(tmp_path, monkeypatch):
+    """Test that old config with local_cuda: true loads as local_device: cuda"""
+    config_file = _prepare_config(tmp_path, monkeypatch)
+
+    # Manually write old-style config
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps({"local_cuda": True}))
+
+    cfg = config_module.load_config()
+    assert cfg.local_device == "cuda"
+
+
+def test_backward_compat_local_cuda_false_becomes_cpu(tmp_path, monkeypatch):
+    """Test that old config with local_cuda: false loads as local_device: cpu"""
+    config_file = _prepare_config(tmp_path, monkeypatch)
+
+    # Manually write old-style config
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps({"local_cuda": False}))
+
+    cfg = config_module.load_config()
+    assert cfg.local_device == "cpu"
+
+
+def test_local_device_takes_precedence_over_local_cuda(tmp_path, monkeypatch):
+    """Test that local_device takes precedence if both are present in config"""
+    config_file = _prepare_config(tmp_path, monkeypatch)
+
+    # Config with both fields - local_device should win
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps({"local_cuda": True, "local_device": "mlx"}))
+
+    cfg = config_module.load_config()
+    assert cfg.local_device == "mlx"
+
+
+def test_backward_compat_coreml_becomes_mlx(tmp_path, monkeypatch):
+    """Test that old config with local_device: coreml loads as local_device: mlx"""
+    config_file = _prepare_config(tmp_path, monkeypatch)
+
+    # Manually write old-style config with coreml
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps({"local_device": "coreml"}))
+
+    cfg = config_module.load_config()
+    assert cfg.local_device == "mlx"
+
+
+def test_detect_default_device_always_cpu():
+    """detect_default_device always returns cpu (MLX is opt-in)."""
+    device = config_module.detect_default_device()
+    assert device == "cpu"
 
 
 def test_save_and_load_embed_concurrency(tmp_path, monkeypatch):
@@ -201,7 +255,7 @@ def test_update_config_from_json_merges(tmp_path, monkeypatch):
             embed_concurrency=4,
             extract_concurrency=5,
             auto_index=True,
-            local_cuda=False,
+            local_device="cpu",
         )
     )
 

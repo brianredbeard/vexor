@@ -344,9 +344,13 @@
                 <input v-model="configForm.autoIndex" type="checkbox" />
                 Auto index
               </label>
-              <label class="toggle">
-                <input v-model="configForm.localCuda" type="checkbox" />
-                Local CUDA
+              <label class="form-label">
+                Local Device
+                <select v-model="configForm.localDevice">
+                  <option value="cpu">CPU</option>
+                  <option value="cuda">CUDA</option>
+                  <option value="mlx">MLX (Metal GPU)</option>
+                </select>
               </label>
             </div>
 
@@ -583,7 +587,7 @@ const configForm = reactive({
   remoteRerankUrl: "",
   remoteRerankModel: "",
   remoteRerankApiKey: "",
-  localCuda: false
+  localDevice: "cpu"
 });
 
 const skillsForm = reactive({
@@ -780,7 +784,7 @@ function applyConfigSnapshot(snapshot) {
   configForm.autoIndex = snapshot.auto_index ?? true;
   configForm.rerank = snapshot.rerank || "off";
   configForm.flashrankModel = snapshot.flashrank_model || "";
-  configForm.localCuda = Boolean(snapshot.local_cuda);
+  configForm.localDevice = snapshot.local_device || "cpu";
   if (snapshot.remote_rerank) {
     configForm.remoteRerankUrl = snapshot.remote_rerank.base_url || "";
     configForm.remoteRerankModel = snapshot.remote_rerank.model || "";
@@ -1019,12 +1023,7 @@ async function runConfigAction(args) {
 
 async function runLocalSetup() {
   const modelName = (localModel.value || configForm.model || "intfloat/multilingual-e5-small").trim();
-  const args = ["local", "--setup", "--model", modelName];
-  if (configForm.localCuda) {
-    args.push("--cuda");
-  } else {
-    args.push("--cpu");
-  }
+  const args = ["local", "--setup", "--model", modelName, "--device", configForm.localDevice];
   await runConfigAction(args);
 }
 

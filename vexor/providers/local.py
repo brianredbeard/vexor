@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import platform
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -9,6 +12,26 @@ import numpy as np
 
 from ..config import local_model_dir
 from ..text import Messages
+
+# Lazy-loaded mlx_embedding_models module (None if not installed)
+try:
+    import mlx_embedding_models
+except ImportError:
+    mlx_embedding_models = None  # type: ignore[assignment]
+
+
+@contextmanager
+def _suppress_mlx_stderr():
+    """Suppress C++-level stderr output from MLX libraries."""
+    old_fd = os.dup(2)
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        _ = os.dup2(devnull, 2)
+        os.close(devnull)
+        yield
+    finally:
+        _ = os.dup2(old_fd, 2)
+        os.close(old_fd)
 
 
 def _load_fastembed():
@@ -53,7 +76,9 @@ def _register_custom_model(text_embedding_cls, model_name: str) -> bool:
     try:
         from fastembed.common.model_description import ModelSource, PoolingType
     except Exception as exc:
-        raise RuntimeError(Messages.ERROR_LOCAL_MODEL_LOAD.format(model=model_name, reason=str(exc))) from exc
+        raise RuntimeError(
+            Messages.ERROR_LOCAL_MODEL_LOAD.format(model=model_name, reason=str(exc))
+        ) from exc
     try:
         text_embedding_cls.add_custom_model(
             model=spec["model"],
@@ -70,6 +95,16 @@ def _register_custom_model(text_embedding_cls, model_name: str) -> bool:
         if "already registered" not in str(exc).lower():
             raise
     return True
+
+
+def is_mlx_available() -> bool:
+    """Check if MLX is available (requires macOS on Apple Silicon)."""
+    if mlx_embedding_models is None:
+        return False
+    try:
+        return platform.system() == "Darwin" and platform.machine() == "arm64"
+    except Exception:
+        return False
 
 
 class LocalEmbeddingBackend:
@@ -113,7 +148,9 @@ class LocalEmbeddingBackend:
                     ) from retry_exc
             else:
                 raise RuntimeError(
-                    Messages.ERROR_LOCAL_MODEL_LOAD.format(model=model_name, reason=str(exc))
+                    Messages.ERROR_LOCAL_MODEL_LOAD.format(
+                        model=model_name, reason=str(exc)
+                    )
                 ) from exc
 
     def embed(self, texts: Sequence[str]) -> np.ndarray:
@@ -131,6 +168,75 @@ class LocalEmbeddingBackend:
         if not vectors:
             raise RuntimeError(Messages.ERROR_NO_EMBEDDINGS)
         return np.vstack(vectors)
+
+
+class MLXEmbeddingBackend:
+    """Embedding backend using MLX for native Apple Silicon GPU acceleration."""
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        chunk_size: int | None = None,
+        concurrency: int = 1,
+    ) -> None:
+        if mlx_embedding_models is None:
+            raise RuntimeError(
+                "mlx-embedding-models is required for MLX backend. "
+                "Install with: uv pip install 'vexor[local-mlx]'"
+            )
+
+        self.model_name = model_name
+        self.chunk_size = chunk_size if chunk_size and chunk_size > 0 else None
+        self.concurrency = max(int(concurrency or 1), 1)
+
+        # Try from_registry first (strips org prefix if present)
+        # Example: "intfloat/multilingual-e5-small" → "multilingual-e5-small"
+        short_name = model_name.split("/")[-1] if "/" in model_name else model_name
+        with _suppress_mlx_stderr():
+            try:
+                self._model = mlx_embedding_models.EmbeddingModel.from_registry(
+                    short_name
+                )
+            except Exception:
+                # Fall back to from_pretrained for arbitrary HuggingFace models
+                try:
+                    self._model = mlx_embedding_models.EmbeddingModel.from_pretrained(
+                        model_name
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        Messages.ERROR_LOCAL_MODEL_LOAD.format(
+                            model=model_name, reason=str(exc)
+                        )
+                    ) from exc
+
+        # CRITICAL: Apply monkey-patch for transformers>=5.0 compatibility
+        # transformers>=5.0 removed batch_encode_plus from TokenizersBackend,
+        # but mlx-embedding-models==0.0.11 still calls it
+        if not hasattr(self._model.tokenizer, "batch_encode_plus"):
+            self._model.tokenizer.batch_encode_plus = self._model.tokenizer.__call__
+
+    def embed(self, texts: Sequence[str]) -> np.ndarray:
+        # Guard empty input - mlx-embedding-models crashes with IndexError
+        if not texts:
+            # Return (0, dim) array - we don't know dim yet, so use 384 as default
+            # (multilingual-e5-small dimension)
+            return np.empty((0, 384), dtype=np.float32)
+
+        try:
+            # mlx-embedding-models handles batching, sorting by length, and L2 normalization internally
+            with _suppress_mlx_stderr():
+                result = self._model.encode(
+                    list(texts),
+                    batch_size=self.chunk_size or 64,
+                    show_progress=False,
+                )
+            return result  # Already numpy float32, L2-normalized
+        except Exception as exc:
+            raise RuntimeError(
+                Messages.ERROR_LOCAL_MODEL_EMBED.format(reason=str(exc))
+            ) from exc
 
 
 def _chunk(items: Sequence[str], size: int | None) -> Iterator[Sequence[str]]:
