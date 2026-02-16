@@ -211,6 +211,12 @@ class MLXEmbeddingBackend:
                         )
                     ) from exc
 
+        # Cap max_length to 512 — mlx-embedding-models' internal SEQ_LENS
+        # bucketing only covers up to 512. Long-context models (bge-m3=8192,
+        # nomic-v1.5=2048) crash with IndexError without this.
+        # See: https://github.com/taylorai/mlx_embedding_models/issues/7
+        self._model.max_length = min(self._model.max_length, 512)
+
         # CRITICAL: Apply monkey-patch for transformers>=5.0 compatibility
         # transformers>=5.0 removed batch_encode_plus from TokenizersBackend,
         # but mlx-embedding-models==0.0.11 still calls it

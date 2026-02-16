@@ -92,6 +92,7 @@ class TestMLXEmbeddingBackend:
         """MLXEmbeddingBackend tries from_registry with short names first."""
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512
         mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
 
         self._make_backend(model_name="multilingual-e5-small")
@@ -108,6 +109,7 @@ class TestMLXEmbeddingBackend:
         """MLXEmbeddingBackend strips org prefix before trying from_registry."""
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512
         mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
 
         self._make_backend(model_name="intfloat/multilingual-e5-small")
@@ -122,6 +124,7 @@ class TestMLXEmbeddingBackend:
         """MLXEmbeddingBackend falls back to from_pretrained if registry fails."""
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512
         # from_registry raises KeyError (model not in registry)
         mock_mlx_models.EmbeddingModel.from_registry.side_effect = KeyError(
             "not in registry"
@@ -140,6 +143,7 @@ class TestMLXEmbeddingBackend:
         """MLXEmbeddingBackend.embed returns numpy array with correct shape."""
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512
         # Simulate encode() returning (N, 384) float32 array
         mock_embeddings = np.random.randn(3, 384).astype(np.float32)
         mock_model.encode.return_value = mock_embeddings
@@ -157,6 +161,7 @@ class TestMLXEmbeddingBackend:
         """MLXEmbeddingBackend.embed guards empty input and returns empty array."""
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512
         mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
 
         backend = self._make_backend()
@@ -173,6 +178,7 @@ class TestMLXEmbeddingBackend:
         """MLXEmbeddingBackend.embed passes chunk_size as batch_size."""
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512
         mock_embeddings = np.random.randn(2, 384).astype(np.float32)
         mock_model.encode.return_value = mock_embeddings
         mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
@@ -191,6 +197,7 @@ class TestMLXEmbeddingBackend:
         """MLXEmbeddingBackend.embed uses default batch_size=64 when chunk_size is None."""
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512
         mock_embeddings = np.random.randn(1, 384).astype(np.float32)
         mock_model.encode.return_value = mock_embeddings
         mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
@@ -216,6 +223,7 @@ class TestMLXEmbeddingBackend:
         """MLXEmbeddingBackend.__init__ uses _suppress_mlx_stderr during model loading."""
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512
         mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
         # Make the context manager work as a no-op for the test
         mock_suppress.return_value.__enter__ = MagicMock()
@@ -234,6 +242,7 @@ class TestMLXEmbeddingBackend:
         """MLXEmbeddingBackend.embed uses _suppress_mlx_stderr during encode."""
         mock_model = MagicMock()
         mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 512
         mock_embeddings = np.random.randn(2, 384).astype(np.float32)
         mock_model.encode.return_value = mock_embeddings
         mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
@@ -262,3 +271,15 @@ class TestMLXEmbeddingBackend:
 
         with pytest.raises(RuntimeError, match="load failed"):
             self._make_backend(model_name="broken-model")
+
+    @patch("vexor.providers.local.mlx_embedding_models")
+    def test_constructor_caps_max_length_to_512(self, mock_mlx_models):
+        """MLXEmbeddingBackend caps model max_length to 512 to avoid SEQ_LENS overflow."""
+        mock_model = MagicMock()
+        mock_model.tokenizer = MagicMock()
+        mock_model.max_length = 8192  # bge-m3 default
+        mock_mlx_models.EmbeddingModel.from_registry.return_value = mock_model
+
+        self._make_backend()
+
+        assert mock_model.max_length == 512
